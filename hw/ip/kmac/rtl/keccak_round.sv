@@ -48,12 +48,12 @@ module keccak_round
 
   // Feed parameters
   parameter  int DInWidth = 64, // currently only 64bit supported
-  localparam int DInEntry = Width / DInWidth,
+  localparam int DInEntry = (Width + DInWidth - 1) / DInWidth,
   localparam int DInAddr  = $clog2(DInEntry),
 
   // State write parameters. The state is restored one bus word at a time.
   parameter  int StateWrWidth = 32,
-  localparam int StateWrEntry = Width / StateWrWidth,
+  localparam int StateWrEntry = (Width + StateWrWidth - 1) / StateWrWidth,
   localparam int StateWrAddr  = $clog2(StateWrEntry),
 
   // Control parameters
@@ -512,24 +512,52 @@ module keccak_round
   // The logic can accept not a block size incoming message chunk but
   // the size defined in `DInWidth` parameter with its position.
 
-  always_comb begin
-    storage_d = keccak_out;
-    if (xor_message) begin
-      for (int j = 0 ; j < Share ; j++) begin
-        for (int unsigned i = 0 ; i < DInEntry ; i++) begin
-          // ICEBOX(#18029): handle If Width is not integer divisible by DInWidth
-          // Currently it is not allowed to have partial write
-          // Please see the Assertion `WidthDivisableByDInWidth_A`
-          if (xor_addr == i[DInAddr-1:0]) begin
-            storage_d[j][i*DInWidth+:DInWidth] =
-              storage[j][i*DInWidth+:DInWidth] ^ xor_data[j];
-          end else begin
-            storage_d[j][i*DInWidth+:DInWidth] = storage[j][i*DInWidth+:DInWidth];
-          end
-        end // for i
-      end // for j
-    end // if xor_message
-  end
+  localparam int FullEntries  = Width / DInWidth;
+  localparam int PartialWidth = Width % DInWidth;
+
+  generate
+    if (PartialWidth == 0) begin : gen_no_partial
+      always_comb begin
+        storage_d = keccak_out;
+        if (xor_message) begin
+          for (int j = 0 ; j < Share ; j++) begin
+            for (int unsigned i = 0 ; i < FullEntries ; i++) begin
+              if (xor_addr == i[DInAddr-1:0]) begin
+                storage_d[j][i*DInWidth+:DInWidth] =
+                  storage[j][i*DInWidth+:DInWidth] ^ xor_data[j];
+              end else begin
+                storage_d[j][i*DInWidth+:DInWidth] = storage[j][i*DInWidth+:DInWidth];
+              end
+            end // for i
+          end // for j
+        end // if xor_message
+      end
+    end else begin : gen_partial
+      always_comb begin
+        storage_d = keccak_out;
+        if (xor_message) begin
+          for (int j = 0 ; j < Share ; j++) begin
+            for (int unsigned i = 0 ; i < FullEntries ; i++) begin
+              if (xor_addr == i[DInAddr-1:0]) begin
+                storage_d[j][i*DInWidth+:DInWidth] =
+                  storage[j][i*DInWidth+:DInWidth] ^ xor_data[j];
+              end else begin
+                storage_d[j][i*DInWidth+:DInWidth] = storage[j][i*DInWidth+:DInWidth];
+              end
+            end // for i
+
+            if (xor_addr == DInAddr'(FullEntries)) begin
+              storage_d[j][FullEntries*DInWidth+:PartialWidth] =
+                storage[j][FullEntries*DInWidth+:PartialWidth] ^ xor_data[j][PartialWidth-1:0];
+            end else begin
+              storage_d[j][FullEntries*DInWidth+:PartialWidth] =
+                storage[j][FullEntries*DInWidth+:PartialWidth];
+            end
+          end // for j
+        end // if xor_message
+      end
+    end
+  endgenerate
 
   // Check the rst_storage integrity
   logic rst_storage_error;
@@ -614,12 +642,7 @@ module keccak_round
   // Assertions //
   ////////////////
 
-  // Only allow `DInWidth` that `Width` is integer divisible by `DInWidth`
-  `ASSERT_INIT(WidthDivisableByDInWidth_A, (Width % DInWidth) == 0)
 
-  // The state write-back port addresses the storage in `StateWrWidth` chunks,
-  // so partial chunks at the top of the state are not supported.
-  `ASSERT_INIT(WidthDivisableByStateWrWidth_A, (Width % StateWrWidth) == 0)
 
   // The state write is placed into one half of a DInWidth lane. `xor_addr` drops a single address
   // bit and `state_waddr_i[0]` selects the half, so the two widths must differ by exactly a factor
